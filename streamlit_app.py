@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # Pagina instellingen
-st.set_page_config(page_title="Master AI Dashboard", layout="wide")
+st.set_page_config(page_title="AI Boekhouder Pro", layout="wide")
 st.title("🏛️ Master Business Intelligence Dashboard")
 
 with st.sidebar:
@@ -13,7 +13,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Yuki CSV", type=['csv'])
 
 if uploaded_file:
-    # 1. DATA LADEN & SCHOONMAKEN
+    # 1. DATA LADEN & OPSCHONEN
     df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
     df.columns = df.columns.str.strip()
 
@@ -25,69 +25,81 @@ if uploaded_file:
 
     df['Amount_Clean'] = df['Bedrag'].apply(clean_val).abs()
     df['Date'] = pd.to_datetime(df['Datum'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['Date']).sort_values('Date') # Belangrijk voor 5-jaar data
+    df = df.dropna(subset=['Date']).sort_values('Date')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
 
-    # 2. CATEGORIEËN
+    # 2. CATEGORIEËN (Boekhoudkundige logica)
     df_omzet = df[df['Code_Str'].str.startswith('8') | (df['Code_Str'] == '18400')].copy()
     df_kosten = df[df['Code_Str'].str.startswith(('4', '6'))].copy()
     df_auto = df[df['Code_Str'].str.startswith('42')].copy()
     df_inkoop = df[df['Code_Str'].str.startswith('6')].copy()
 
-    # 3. ROBUUSTE PROGNOSE (Corrigeert de € 0 fout)
-    # Pak de laatste 12 maanden uit het bestand als basis voor 2026
+    # 3. SLIMME PROGNOSE LOGICA (Peter Bouw & Nga Ho Proof)
     last_date = df['Date'].max()
     one_year_ago = last_date - pd.DateOffset(years=1)
+    two_years_ago = one_year_ago - pd.DateOffset(years=1)
     
+    # Omzet laatste 12 maanden
     recent_omzet_data = df_omzet[df_omzet['Date'] > one_year_ago]
     totaal_omzet_laatste_jaar = recent_omzet_data['Amount_Clean'].sum()
 
-    # Als het laatste jaar leeg is (foutje in data), pak dan het gemiddelde van alle jaren
+    # Omzet het jaar daarvoor (voor groei berekening)
+    omzet_vorig_jaar = df_omzet[(df_omzet['Date'] > two_years_ago) & (df_omzet['Date'] <= one_year_ago)]['Amount_Clean'].sum()
+
+    # Correctie voor lege data (€ 0 fout voorkomen)
     if totaal_omzet_laatste_jaar == 0:
         aantal_jaren = max(1, (df['Date'].max() - df['Date'].min()).days / 365)
         totaal_2026 = df_omzet['Amount_Clean'].sum() / aantal_jaren
     else:
         totaal_2026 = totaal_omzet_laatste_jaar
 
-    # Seizoenspatroon berekenen op basis van alle data (5 jaar gemiddelde per maand)
-    seasonal_profile = df_omzet.groupby(df_omzet['Date'].dt.month)['Amount_Clean'].mean()
-    if seasonal_profile.empty: # Fallback
-        seasonal_profile = pd.Series([1]*12, index=range(1,13))
+    # Groei berekenen met Data Guard
+    if omzet_vorig_jaar < 1000: # Te lage basis voorkomt 1682%
+        groei = 0.0
+        st.sidebar.warning("⚠️ Historie beperkt: Groei op 0% gezet.")
+    else:
+        raw_groei = ((totaal_2026 - omzet_vorig_jaar) / omzet_vorig_jaar * 100)
+        groei = min(raw_groei, 15.0) # Cap op 15% voor realisme in de prognose
     
-    forecast_2026_list = [(seasonal_profile.get(m, seasonal_profile.mean()) / seasonal_profile.sum()) * totaal_2026 for m in range(1, 13)]
-    future_dates = pd.date_range(start=pd.Timestamp(last_date.year + 1, 1, 1), periods=12, freq='ME')
-
-    # 4. KPI'S BEREKENEN
+    # Marge en Winst
     marge_ratio = (df_omzet['Amount_Clean'].sum() - df_kosten['Amount_Clean'].sum()) / df_omzet['Amount_Clean'].sum() if not df_omzet.empty else 0.1
     winst_2026 = totaal_2026 * marge_ratio
 
-    st.subheader(f"📊 Strategisch Dashboard (Basis: {last_date.year})")
+    # Seizoenspatroon
+    seasonal_profile = df_omzet.groupby(df_omzet['Date'].dt.month)['Amount_Clean'].mean()
+    if seasonal_profile.empty:
+        seasonal_profile = pd.Series([1]*12, index=range(1,13))
+    
+    forecast_2026_list = [(seasonal_profile.get(m, seasonal_profile.mean()) / seasonal_profile.sum()) * totaal_2026 for m in range(1, 13)]
+    future_dates = pd.date_range(start=pd.Timestamp(2026, 1, 1), periods=12, freq='ME')
+
+    # 4. DASHBOARD WEERGAVE
+    st.subheader(f"📊 Strategisch Overzicht 2026 (Analyse: {last_date.strftime('%d-%m-%Y')})")
+    
+    if winst_2026 < 0:
+        st.error(f"🚨 KRITIEKE MELDING: Verwacht verlies van € {abs(winst_2026):,.2f}. De kosten zijn momenteel hoger dan de omzet!")
+
     k1, k2, k3 = st.columns(3)
     k1.metric("Verwachte Omzet 2026", f"€ {totaal_2026:,.2f}")
-    k2.metric("Verwachte Winst 2026", f"€ {winst_2026:,.2f}")
-    
-    # Groei vergelijking met het jaar daarvóór
-    twee_jaar_geleden = one_year_ago - pd.DateOffset(years=1)
-    omzet_vorig_jaar = df_omzet[(df_omzet['Date'] > twee_jaar_geleden) & (df_omzet['Date'] <= one_year_ago)]['Amount_Clean'].sum()
-    groei = ((totaal_2026 - omzet_vorig_jaar) / omzet_vorig_jaar * 100) if omzet_vorig_jaar > 0 else 0
+    k2.metric("Verwachte Winst 2026", f"€ {winst_2026:,.2f}", delta_color="inverse" if winst_2026 < 0 else "normal")
     k3.metric("Groeipotentieel", f"{groei:.1f}%")
 
-    # 5. VISUALISATIE: TREND
+    # 5. GRAFIEK
     st.markdown("---")
     st.subheader("📈 Omzet Trend: Historie vs. Prognose")
     monthly_rev = df_omzet.resample('ME', on='Date')['Amount_Clean'].sum().reset_index()
     
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=monthly_rev['Date'].tail(24), y=monthly_rev['Amount_Clean'].tail(24), name="Historie (Laatste 24m)", marker_color='#1f77b4'))
-    fig.add_trace(go.Bar(x=future_dates, y=forecast_2026_list, name="Prognose 2026", marker_color='#ff7f0e'))
+    fig.add_trace(go.Bar(x=monthly_rev['Date'].tail(24), y=monthly_rev['Amount_Clean'].tail(24), name="Historie (Blauw)", marker_color='#1f77b4'))
+    fig.add_trace(go.Bar(x=future_dates, y=forecast_2026_list, name="Prognose 2026 (Oranje)", marker_color='#ff7f0e'))
     fig.update_layout(template="plotly_white", barmode='group', height=400)
     st.plotly_chart(fig, use_container_width=True)
 
-    # 6. BTW & KOSTEN
+    # 6. BTW EN PIE
     st.markdown("---")
-    col_a, col_b = st.columns(2)
+    c1, c2 = st.columns(2)
     
-    with col_a:
+    with c1:
         st.subheader("🏦 BTW Planner (Per Kwartaal)")
         q_rows = []
         for q in range(1, 5):
@@ -96,25 +108,24 @@ if uploaded_file:
             q_cost = q_rev * (1 - marge_ratio)
             afdracht = q_rev * 0.21 if not is_vrijgesteld else 0
             voorbelasting = q_cost * 0.21 if not is_vrijgesteld else 0
-            q_rows.append({"Kwartaal": f"Q{q} Proj.", "Omzet": f"€ {q_rev:,.0f}", "Netto BTW": f"€ {afdracht-voorbelasting:,.2f}"})
+            q_rows.append({"Kwartaal": f"Q{q} 2026", "Omzet": f"€ {q_rev:,.0f}", "Netto BTW": f"€ {afdracht-voorbelasting:,.2f}"})
         st.table(pd.DataFrame(q_rows))
 
-    with col_b:
-        st.subheader("🍕 Kostenverdeling (Totaalhistorie)")
+    with c2:
+        st.subheader("🍕 Kostenverdeling")
         andere_kosten = df_kosten['Amount_Clean'].sum() - df_inkoop['Amount_Clean'].sum() - df_auto['Amount_Clean'].sum()
-        fig_pie = go.Figure(data=[go.Pie(labels=['Inkoop', 'Auto', 'Overig'], 
+        fig_pie = go.Figure(data=[go.Pie(labels=['Inkoop (6xxx)', 'Auto (42xxx)', 'Overig'], 
                                          values=[df_inkoop['Amount_Clean'].sum(), df_auto['Amount_Clean'].sum(), max(0, andere_kosten)], 
                                          hole=.3)])
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # 7. DETAIL TABEL
+    # 7. TABEL
     st.markdown("---")
     st.subheader("📉 Winst- en Verlies Detail")
-    details = pd.DataFrame({
-        "Categorie": ["Netto-omzet", "Kostprijs omzet (6xxx)", "Autokosten (42xxx)", "Overige Bedrijfslasten"],
+    st.table(pd.DataFrame({
+        "Categorie": ["Netto-omzet", "Kostprijs omzet", "Autokosten", "Overige Bedrijfskosten"],
         "Bedrag": [df_omzet['Amount_Clean'].sum(), df_inkoop['Amount_Clean'].sum(), df_auto['Amount_Clean'].sum(), max(0, andere_kosten)]
-    })
-    st.table(details.style.format({"Bedrag": "€ {:,.2f}"}))
+    }).style.format({"Bedrag": "€ {:,.2f}"}))
 
 else:
-    st.info("Upload de Yuki CSV (bijv. 5 jaar data van Peter Bouw) om te beginnen.")
+    st.info("Upload de Yuki CSV van Peter Bouw, Nga Ho of JS Creation.")
