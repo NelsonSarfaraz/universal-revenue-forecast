@@ -4,17 +4,16 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression
 
-st.set_page_config(page_title="AI Boekhouder Pro", layout="wide")
-st.title("⚖️ AI Boekhouder - Business Audit & Prognose")
+st.set_page_config(page_title="Master AI Boekhouder", layout="wide")
+st.title("🏛️ Master AI Boekhouder - Full Financial Intelligence")
 
-# Instelling voor BTW-vrijstelling (belangrijk voor Zorg)
 with st.sidebar:
-    st.header("Bedrijfsinstellingen")
-    is_vrijgesteld = st.toggle("Bedrijf is BTW-vrijgesteld (zoals Zorg)", value=True)
-    uploaded_file = st.file_uploader("Upload Yuki Transacties", type=['csv'])
+    st.header("Instellingen")
+    is_vrijgesteld = st.toggle("Bedrijf is BTW-vrijgesteld (Zorg/Onderwijs)", value=False)
+    uploaded_file = st.file_uploader("Upload Yuki Transacties (CSV)", type=['csv'])
 
 if uploaded_file:
-    # 1. DATA LADEN & SCHOONMAKEN
+    # 1. DATA PARSING
     df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
     df.columns = df.columns.str.strip()
 
@@ -28,22 +27,26 @@ if uploaded_file:
     df['Date'] = pd.to_datetime(df['Datum'], dayfirst=True, errors='coerce')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
 
-    # 2. GROEPEREN
+    # 2. CATEGORISERING (BOEKHOUDKUNDIG)
     df_omzet = df[df['Code_Str'].str.startswith('8') | (df['Code_Str'] == '18400')].copy()
     df_inkoop = df[df['Code_Str'].str.startswith('6')].copy()
-    df_personeel = df[df['Code_Str'].str.startswith(('40', '41', '42'))].copy()
-    df_algemeen = df[df['Code_Str'].str.startswith(('43', '44', '45', '46', '47', '48', '49'))].copy()
+    df_auto = df[df['Code_Str'].str.startswith('42')].copy()
+    df_huisvesting = df[df['Code_Str'].str.startswith('43')].copy()
+    df_overig = df[df['Code_Str'].str.startswith(('40', '41', '44', '45', '46', '47', '48', '49'))].copy()
+    df_totaal_kosten = df[df['Code_Str'].str.startswith(('4', '6'))].copy()
 
-    # 3. PROGNOSE MODEL
+    # 3. PROGNOSE MODEL (MET EXTRAPOLATIE 2025)
     monthly_rev = df_omzet.resample('ME', on='Date')['Amount_Clean'].sum().reset_index()
     
     if len(monthly_rev) >= 3:
         last_date = monthly_rev['Date'].max()
+        omzet_2025_nu = monthly_rev[monthly_rev['Date'].dt.year == 2025]['Amount_Clean'].sum()
+        
+        # Schatting 2025 als het jaar nog bezig is
         if last_date.year == 2025 and last_date.month < 12:
-            avg_per_month = monthly_rev[monthly_rev['Date'].dt.year == 2025]['Amount_Clean'].mean()
-            omzet_2025_est = avg_per_month * 12
+            omzet_2025_est = (omzet_2025_nu / last_date.month) * 12
         else:
-            omzet_2025_est = monthly_rev[monthly_rev['Date'].dt.year == 2025]['Amount_Clean'].sum()
+            omzet_2025_est = omzet_2025_nu
 
         X = np.arange(len(monthly_rev)).reshape(-1, 1)
         y = monthly_rev['Amount_Clean']
@@ -51,71 +54,68 @@ if uploaded_file:
         future_dates = pd.date_range(start='2026-01-01', periods=12, freq='ME')
         forecast_2026 = [max(0, model.predict([[len(monthly_rev) + i]])[0]) for i in range(12)]
         totaal_2026 = sum(forecast_2026)
+        groei = ((totaal_2026 - omzet_2025_est) / omzet_2025_est * 100) if omzet_2025_est > 0 else 0
     else:
-        totaal_2026, omzet_2025_est, forecast_2026, future_dates = 0, 0, [], []
+        totaal_2026, groei, forecast_2026, future_dates = 0, 0, [], []
 
-    # 4. KPI'S
-    st.subheader("📋 Tussentijdse Resultaten & 2026 Voorspelling")
-    c1, c2, c3 = st.columns(3)
-    
-    totale_kosten_jaar = (df_inkoop['Amount_Clean'].sum() + df_personeel['Amount_Clean'].sum() + df_algemeen['Amount_Clean'].sum())
-    winst_2026 = totaal_2026 - (totale_kosten_jaar / 2 if totale_kosten_jaar > 0 else 0)
-    
-    c1.metric("Verwachte Omzet 2026", f"€ {totaal_2026:,.2f}")
-    c2.metric("Verwacht Netto Resultaat", f"€ {max(0, winst_2026):,.2f}")
-    groei = ((totaal_2026 - omzet_2025_est) / omzet_2025_est * 100) if omzet_2025_est > 0 else 0
-    c3.metric("Groeipotentieel vs 2025", f"{groei:.1f}%")
+    # 4. BTW ANALYSE
+    btw_afdracht = 0 if is_vrijgesteld else (df_omzet['Amount_Clean'].sum() * 0.21)
+    btw_voorbelasting = 0 if is_vrijgesteld else (df_totaal_kosten['Amount_Clean'].sum() * 0.21)
+    btw_saldo = btw_afdracht - btw_voorbelasting
 
-    # --- DE MOOIE GRAFIEK (VISUALS) ---
+    # --- UI: KPI TILES ---
+    st.subheader("📊 Strategisch Overzicht 2026")
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("Verwachte Omzet 2026", f"€ {totaal_2026:,.2f}")
+    
+    marge_ratio = (df_omzet['Amount_Clean'].sum() - df_totaal_kosten['Amount_Clean'].sum()) / df_omzet['Amount_Clean'].sum() if not df_omzet.empty else 0
+    winst_2026 = totaal_2026 * marge_ratio
+    kpi2.metric("Verwachte Winst 2026", f"€ {winst_2026:,.2f}")
+    kpi3.metric("Groeipotentieel vs 2025", f"{groei:.1f}%", delta=f"{groei:.1f}%")
+
+    # --- UI: TREND GRAFIEK ---
     st.markdown("---")
-    st.subheader("📈 Financiële Trend & Prognose 2026")
-
     fig = go.Figure()
-    # Historische Omzet
-    fig.add_trace(go.Bar(x=monthly_rev['Date'], y=monthly_rev['Amount_Clean'], name="Omzet (Historie)", marker_color='#1f77b4', opacity=0.7))
-    # Prognose
+    fig.add_trace(go.Bar(x=monthly_rev['Date'], y=monthly_rev['Amount_Clean'], name="Omzet Historie", marker_color='#1f77b4'))
     if len(forecast_2026) > 0:
-        fig.add_trace(go.Bar(x=future_dates, y=forecast_2026, name="Prognose 2026", marker_color='#ff7f0e', opacity=0.6))
-    # Winstlijn
-    fig.add_trace(go.Scatter(x=monthly_rev['Date'], y=monthly_rev['Amount_Clean'] * 0.85, name="Resultaat Trend", line=dict(color='#2ca02c', width=3, shape='spline')))
-
-    fig.update_layout(hovermode="x unified", template="plotly_white", height=450, margin=dict(l=0, r=0, t=50, b=0))
+        fig.add_trace(go.Bar(x=future_dates, y=forecast_2026, name="Prognose 2026", marker_color='#ff7f0e'))
+    fig.update_layout(title="Omzetontwikkeling & Forecast", template="plotly_white", barmode='group')
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- MARGE & ADVIES ---
+    # --- UI: BTW & KOSTEN PIE ---
     st.markdown("---")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        marge = (winst_2026 / totaal_2026 * 100) if totaal_2026 > 0 else 0
-        st.write(f"### Winstmarge: **{marge:.1f}%**")
-        st.progress(min(max(marge/100, 0.0), 1.0))
-        st.caption("Hoeveel procent van de omzet blijft over als winst.")
-    with col_b:
-        st.write("### 💡 AI-Boekhouder Advies")
-        if marge > 50:
-            st.success("Zeer efficiënte bedrijfsvoering met lage overhead.")
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.subheader("🏦 BTW-Positie (Totaaloverzicht)")
+        if is_vrijgesteld:
+            st.warning("Dit bedrijf is BTW-vrijgesteld. Geen afdracht of teruggave.")
         else:
-            st.info("Let op de verhouding tussen inkoop en netto resultaat.")
+            st.write(f"**Te betalen (Omzet):** € {btw_afdracht:,.2f}")
+            st.write(f"**Te ontvangen (Kosten):** € {btw_voorbelasting:,.2f}")
+            if btw_saldo > 0:
+                st.error(f"**Netto betalen aan Belastingdienst:** € {btw_saldo:,.2f}")
+            else:
+                st.success(f"**Netto te ontvangen:** € {abs(btw_saldo):,.2f}")
 
-    # --- TABEL ---
+    with col_right:
+        st.subheader("🍕 Kostenverdeling")
+        labels = ['Inkoop', 'Auto', 'Huisvesting', 'Overige Bedrijfskosten']
+        values = [df_inkoop['Amount_Clean'].sum(), df_auto['Amount_Clean'].sum(), 
+                  df_huisvesting['Amount_Clean'].sum(), df_overig['Amount_Clean'].sum()]
+        fig_pie = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.3)])
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    # --- UI: DETAIL TABEL ---
     st.markdown("---")
-    st.subheader("📉 Winst- en Verlies Analyse")
-    data = {
-        "Categorie": ["Netto-omzet", "Kostprijs van de omzet", "Personeelskosten", "Overige bedrijfskosten"],
-        "Totaal Bedrag": [
-            f"€ {df_omzet['Amount_Clean'].sum():,.2f}",
-            f"€ {df_inkoop['Amount_Clean'].sum():,.2f}",
-            f"€ {df_personeel['Amount_Clean'].sum():,.2f}",
-            f"€ {df_algemeen['Amount_Clean'].sum():,.2f}"
-        ]
-    }
-    st.table(pd.DataFrame(data))
-
-    if is_vrijgesteld:
-        st.warning("⚠️ **Bedrijf is BTW-vrijgesteld (Zorg):** Geen teruggave mogelijk.")
-    else:
-        btw = (df_algemeen['Amount_Clean'].sum() + df_personeel['Amount_Clean'].sum()) * 0.21
-        st.success(f"💰 **Te ontvangen BTW:** € {btw:,.2f}")
+    st.subheader("📉 Winst- en Verlies Detail")
+    details = pd.DataFrame({
+        "Categorie": ["Omzet", "Inkoop", "Autokosten", "Huisvesting", "Overig"],
+        "Bedrag": [df_omzet['Amount_Clean'].sum(), df_inkoop['Amount_Clean'].sum(), 
+                   df_auto['Amount_Clean'].sum(), df_huisvesting['Amount_Clean'].sum(), 
+                   df_overig['Amount_Clean'].sum()]
+    })
+    st.table(details.style.format({"Bedrag": "€ {:,.2f}"}))
 
 else:
-    st.info("Upload de Yuki CSV voor een volledige boekhoudkundige analyse.")
+    st.info("Upload een Yuki CSV om de volledige analyse te starten.")
