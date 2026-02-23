@@ -2,95 +2,92 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from sklearn.linear_model import LinearRegression
 
-# --- PAGINA INSTELLINGEN ---
-st.set_page_config(page_title="Universal Finance Intelligence", layout="wide")
-
+st.set_page_config(page_title="Pro Finance & Tax Intelligence", layout="wide")
 st.title("📈 Smart Finance & Tax Intelligence")
-st.markdown("Geautomatiseerde analyse van winst, kosten en BTW-reserveringen.")
 
-# --- SIDEBAR VOOR UPLOAD ---
 with st.sidebar:
     st.header("Data Import")
     uploaded_file = st.file_uploader("Upload Yuki Transacties (CSV)", type=['csv'])
-    st.info("Deze tool filtert automatisch de relevante grootboekrekeningen voor omzet en kosten.")
 
 if uploaded_file:
-    # 1. DATA INLADEN & OPSCHONEN
-    # FIXED: encoding naar 'iso-8859-1' om de UnicodeDecodeError op te lossen
-    try:
-        df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
-    except Exception as e:
-        st.error(f"Er ging iets mis bij het inladen: {e}")
-        st.stop()
-    
-    # Kolomnamen opschonen (verwijder onzichtbare spaties)
+    # 1. DATA LADEN
+    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
     df.columns = df.columns.str.strip()
 
-    # Bedrag kolom opschonen (verwijdert ", . en zorgt voor getallen)
-    def clean_currency(x):
+    # Bedrag opschonen en "ompolen"
+    def clean_val(x):
         if pd.isna(x): return 0.0
-        # Haal aanhalingstekens en duizendtallen (punten) weg, vervang komma door punt
         x = str(x).replace('"', '').replace('.', '').replace(',', '.')
-        try:
-            return float(x)
-        except:
-            return 0.0
+        try: return float(x)
+        except: return 0.0
 
-    df['Amount_Clean'] = df['Bedrag'].apply(clean_currency)
+    df['Amount_Raw'] = df['Bedrag'].apply(clean_val)
     df['Date'] = pd.to_datetime(df['Datum'], dayfirst=True, errors='coerce')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
     
-    # 2. SLIMME CATEGORISERING
-    # Omzet begint met 8, Kosten met 4 of 7.
+    # FILTER: Omzet (8xxx) moet POSITIEF zijn voor de weergave, Kosten (4xxx/7xxx) ook.
+    # Yuki zet omzet vaak als negatief (credit), dus we gebruiken abs()
     df_omzet = df[df['Code_Str'].str.startswith('8')].copy()
+    df_omzet['Amount_Clean'] = df_omzet['Amount_Raw'].abs() 
+
     df_kosten = df[df['Code_Str'].str.startswith(('4', '7'))].copy()
+    df_kosten['Amount_Clean'] = df_kosten['Amount_Raw'].abs()
 
-    # 3. BTW LOGICA OP MAAT
-    def calc_btw_logic(row):
-        naam = str(row['Grootboekrekening']).lower()
-        bedrag = row['Amount_Clean']
-        if 'laag' in naam or '9%' in naam:
-            return bedrag * 0.09
-        elif 'hoog' in naam or '21%' in naam or row['Code_Str'].startswith('8'):
-            return bedrag * 0.21
-        return 0.0
-
-    df_omzet['VAT_Estimated'] = df_omzet.apply(calc_btw_logic, axis=1)
-    df_kosten['VAT_Reclaim'] = df_kosten['Amount_Clean'] * 0.21
-
-    # --- DASHBOARD WEERGAVE ---
-    total_rev = df_omzet['Amount_Clean'].sum()
-    total_exp = df_kosten['Amount_Clean'].sum()
-    net_profit = total_rev - total_exp
-    estimated_vat_due = df_omzet['VAT_Estimated'].sum() - df_kosten['VAT_Reclaim'].sum()
-
-    # Top Metrics
-    st.markdown("---")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Totale Omzet (Netto)", f"€ {total_rev:,.2f}")
-    m2.metric("Operationele Kosten", f"€ {total_exp:,.2f}")
-    m3.metric("Netto Resultaat", f"€ {net_profit:,.2f}")
-
-    # BTW Alert Box
-    st.markdown("---")
-    st.subheader("🚨 Cashflow Management: Belasting")
-    if estimated_vat_due > 0:
-        st.warning(f"**BTW Reservering:** Op basis van deze data moet er circa **€ {estimated_vat_due:,.2f}** gereserveerd worden voor de afdracht.")
+    # 2. BTW LOGICA PER KWARTAAL
+    df_omzet['BTW_Hoog'] = df_omzet['Amount_Clean'] * 0.21
+    df_kosten['BTW_Terug'] = df_kosten['Amount_Clean'] * 0.21
+    
+    df['Kwartaal'] = df['Date'].dt.to_period('Q')
+    
+    # 3. PROGNOSE 2026 BEREKENING
+    monthly_rev = df_omzet.resample('ME', on='Date')['Amount_Clean'].sum().reset_index()
+    if len(monthly_rev) > 3:
+        X = np.arange(len(monthly_rev)).reshape(-1, 1)
+        y = monthly_rev['Amount_Clean']
+        model = LinearRegression().fit(X, y)
+        
+        future_dates = pd.date_range(start='2026-01-01', periods=12, freq='ME')
+        forecast_2026 = [max(0, model.predict([[len(monthly_rev) + i]])[0]) for i in range(12)]
+        
+        totaal_2026 = sum(forecast_2026)
+        vorig_jaar_omzet = monthly_rev.iloc[-12:]['Amount_Clean'].sum() if len(monthly_rev) >= 12 else monthly_rev['Amount_Clean'].sum()
+        groeifactor = ((totaal_2026 - vorig_jaar_omzet) / vorig_jaar_omzet) * 100 if vorig_jaar_omzet > 0 else 0
+        piek_maand = future_dates[np.argmax(forecast_2026)].strftime('%B')
     else:
-        st.success(f"**BTW Teruggave:** Je hebt meer kosten met BTW gemaakt dan omzet. Geschatte teruggave: **€ {abs(estimated_vat_due):,.2f}**.")
+        totaal_2026, groeifactor, piek_maand = 0, 0, "Onvoldoende data"
 
-    # Visualisatie: Inkomsten vs Uitgaven over tijd
-    st.subheader("Inkomsten vs Uitgaven Trend")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_omzet['Date'], y=df_omzet['Amount_Clean'], name="Omzet", mode='lines+markers', line=dict(color='green')))
-    fig.add_trace(go.Scatter(x=df_kosten['Date'], y=df_kosten['Amount_Clean'], name="Kosten", mode='lines+markers', line=dict(color='red')))
-    st.plotly_chart(fig, use_container_width=True)
+    # --- UI WEERGAVE ---
+    st.subheader("📊 Key Performance Indicators 2026")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Prognose Jaaromzet 2026", f"€ {totaal_2026:,.2f}")
+    k2.metric("Groeifactor vs Vorig Jaar", f"{groeifactor:.1f}%", delta=f"{groeifactor:.1f}%")
+    k3.metric("Verwachte Piekmaand", piek_maand)
 
-    # Tabel met de grootste kostenposten
-    st.subheader("Top Kostenposten per Grootboek")
-    top_costs = df_kosten.groupby('Grootboekrekening')['Amount_Clean'].sum().sort_values(ascending=False).head(10)
-    st.table(top_costs)
+    st.markdown("---")
+    st.subheader("🏢 Huidige Financiële Status")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Totale Omzet (Netto)", f"€ {df_omzet['Amount_Clean'].sum():,.2f}")
+    m2.metric("Operationele Kosten", f"€ {df_kosten['Amount_Clean'].sum():,.2f}")
+    m3.metric("Netto Winst", f"€ {(df_omzet['Amount_Clean'].sum() - df_kosten['Amount_Clean'].sum()):,.2f}")
+
+    # BTW PER KWARTAAL
+    st.markdown("---")
+    st.subheader("📅 BTW Reservering per Kwartaal")
+    # Berekening per kwartaal
+    q_omzet = df_omzet.groupby(df_omzet['Date'].dt.to_period('Q'))['Amount_Clean'].sum() * 0.21
+    q_kosten = df_kosten.groupby(df_kosten['Date'].dt.to_period('Q'))['Amount_Clean'].sum() * 0.21
+    q_btw = (q_omzet - q_kosten).fillna(0)
+    
+    st.bar_chart(q_btw)
+    
+    latest_q = q_btw.index[-1]
+    st.warning(f"⚠️ **Actie vereist:** Voor het laatste kwartaal ({latest_q}) moet er circa **€ {q_btw.iloc[-1]:,.2f}** gereserveerd worden.")
+
+    # TOP KOSTEN
+    st.subheader("Top Kostenposten")
+    st.table(df_kosten.groupby('Grootboekrekening')['Amount_Clean'].sum().sort_values(ascending=False).head(10))
 
 else:
-    st.info("Upload het financiële exportbestand om de AI-analyse te starten.")
+    st.info("Upload de Yuki-transacties om de volledige analyse te zien.")
