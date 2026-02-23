@@ -13,7 +13,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Yuki CSV", type=['csv'])
 
 if uploaded_file:
-    # 1. DATA LADEN & OPSCHONEN
+    # 1. DATA LADEN & SCHOONMAKEN
     df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
     df.columns = df.columns.str.strip()
 
@@ -28,40 +28,35 @@ if uploaded_file:
     df = df.dropna(subset=['Date']).sort_values('Date')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
 
-    # 2. CATEGORIEËN (Boekhoudkundige logica)
+    # 2. CATEGORIEËN
     df_omzet = df[df['Code_Str'].str.startswith('8') | (df['Code_Str'] == '18400')].copy()
     df_kosten = df[df['Code_Str'].str.startswith(('4', '6'))].copy()
     df_auto = df[df['Code_Str'].str.startswith('42')].copy()
     df_inkoop = df[df['Code_Str'].str.startswith('6')].copy()
 
-    # 3. SLIMME PROGNOSE LOGICA (Peter Bouw & Nga Ho Proof)
+    # 3. PROGNOSE LOGICA
     last_date = df['Date'].max()
     one_year_ago = last_date - pd.DateOffset(years=1)
     two_years_ago = one_year_ago - pd.DateOffset(years=1)
     
-    # Omzet laatste 12 maanden
     recent_omzet_data = df_omzet[df_omzet['Date'] > one_year_ago]
     totaal_omzet_laatste_jaar = recent_omzet_data['Amount_Clean'].sum()
-
-    # Omzet het jaar daarvoor (voor groei berekening)
     omzet_vorig_jaar = df_omzet[(df_omzet['Date'] > two_years_ago) & (df_omzet['Date'] <= one_year_ago)]['Amount_Clean'].sum()
 
-    # Correctie voor lege data (€ 0 fout voorkomen)
+    # Bepaal basis voor 2026
     if totaal_omzet_laatste_jaar == 0:
         aantal_jaren = max(1, (df['Date'].max() - df['Date'].min()).days / 365)
         totaal_2026 = df_omzet['Amount_Clean'].sum() / aantal_jaren
     else:
         totaal_2026 = totaal_omzet_laatste_jaar
 
-    # Groei berekenen met Data Guard
-    if omzet_vorig_jaar < 1000: # Te lage basis voorkomt 1682%
+    # Groei berekenen met beveiliging (Data Guard)
+    if omzet_vorig_jaar < 1000:
         groei = 0.0
-        st.sidebar.warning("⚠️ Historie beperkt: Groei op 0% gezet.")
     else:
         raw_groei = ((totaal_2026 - omzet_vorig_jaar) / omzet_vorig_jaar * 100)
-        groei = min(raw_groei, 15.0) # Cap op 15% voor realisme in de prognose
+        groei = min(raw_groei, 15.0) # Nooit meer dan 15% in prognose voor realisme
     
-    # Marge en Winst
     marge_ratio = (df_omzet['Amount_Clean'].sum() - df_kosten['Amount_Clean'].sum()) / df_omzet['Amount_Clean'].sum() if not df_omzet.empty else 0.1
     winst_2026 = totaal_2026 * marge_ratio
 
@@ -72,30 +67,30 @@ if uploaded_file:
     
     forecast_2026_list = [(seasonal_profile.get(m, seasonal_profile.mean()) / seasonal_profile.sum()) * totaal_2026 for m in range(1, 13)]
     future_dates = pd.date_range(start=pd.Timestamp(2026, 1, 1), periods=12, freq='ME')
+    monthly_rev = df_omzet.resample('ME', on='Date')['Amount_Clean'].sum().reset_index()
 
-    # 4. DASHBOARD WEERGAVE
-    st.subheader(f"📊 Strategisch Overzicht 2026 (Analyse: {last_date.strftime('%d-%m-%Y')})")
-    
+    # --- LAYOUT START ---
+
+    # A. KPI'S (BOVENAAN)
+    st.subheader(f"📊 Strategisch Overzicht 2026")
     if winst_2026 < 0:
-        st.error(f"🚨 KRITIEKE MELDING: Verwacht verlies van € {abs(winst_2026):,.2f}. De kosten zijn momenteel hoger dan de omzet!")
+        st.error(f"🚨 Let op: Verwacht verlies van € {abs(winst_2026):,.2f}. Kosten zijn hoger dan omzet.")
 
     k1, k2, k3 = st.columns(3)
     k1.metric("Verwachte Omzet 2026", f"€ {totaal_2026:,.2f}")
     k2.metric("Verwachte Winst 2026", f"€ {winst_2026:,.2f}", delta_color="inverse" if winst_2026 < 0 else "normal")
     k3.metric("Groeipotentieel", f"{groei:.1f}%")
 
-    # 5. GRAFIEK
+    # B. DE GRAFIEK (MIDDEN - VOLLE BREEDTE)
     st.markdown("---")
     st.subheader("📈 Omzet Trend: Historie vs. Prognose")
-    monthly_rev = df_omzet.resample('ME', on='Date')['Amount_Clean'].sum().reset_index()
-    
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=monthly_rev['Date'].tail(24), y=monthly_rev['Amount_Clean'].tail(24), name="Historie (Blauw)", marker_color='#1f77b4'))
-    fig.add_trace(go.Bar(x=future_dates, y=forecast_2026_list, name="Prognose 2026 (Oranje)", marker_color='#ff7f0e'))
-    fig.update_layout(template="plotly_white", barmode='group', height=400)
+    fig.add_trace(go.Bar(x=monthly_rev['Date'].tail(24), y=monthly_rev['Amount_Clean'].tail(24), name="Historie", marker_color='#1f77b4'))
+    fig.add_trace(go.Bar(x=future_dates, y=forecast_2026_list, name="Prognose 2026", marker_color='#ff7f0e'))
+    fig.update_layout(template="plotly_white", barmode='group', height=400, margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # 6. BTW EN PIE
+    # C. BTW EN PIE (TWEE KOLOMMEN ONDER DE GRAFIEK)
     st.markdown("---")
     c1, c2 = st.columns(2)
     
@@ -114,12 +109,13 @@ if uploaded_file:
     with c2:
         st.subheader("🍕 Kostenverdeling")
         andere_kosten = df_kosten['Amount_Clean'].sum() - df_inkoop['Amount_Clean'].sum() - df_auto['Amount_Clean'].sum()
-        fig_pie = go.Figure(data=[go.Pie(labels=['Inkoop (6xxx)', 'Auto (42xxx)', 'Overig'], 
+        fig_pie = go.Figure(data=[go.Pie(labels=['Inkoop', 'Auto', 'Overig'], 
                                          values=[df_inkoop['Amount_Clean'].sum(), df_auto['Amount_Clean'].sum(), max(0, andere_kosten)], 
                                          hole=.3)])
+        fig_pie.update_layout(margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # 7. TABEL
+    # D. DETAIL TABEL (ONDERAAN)
     st.markdown("---")
     st.subheader("📉 Winst- en Verlies Detail")
     st.table(pd.DataFrame({
@@ -128,4 +124,4 @@ if uploaded_file:
     }).style.format({"Bedrag": "€ {:,.2f}"}))
 
 else:
-    st.info("Upload de Yuki CSV van Peter Bouw, Nga Ho of JS Creation.")
+    st.info("Upload de Yuki CSV om het dashboard te genereren.")
