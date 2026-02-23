@@ -124,3 +124,9 @@ if uploaded_file:
 
 else:
     st.info("Upload de Yuki CSV om het Master Dashboard te starten.")
+
+
+# Kleine toevoeging voor de seizoensberekening:
+seasonal_profile = df_omzet.groupby(df_omzet['Date'].dt.month)['Amount_Clean'].mean()
+# Vul gaten op met het gemiddelde als een maand op 0 staat
+seasonal_profile = seasonal_profile.replace(0, seasonal_profile.mean()).fillna(seasonal_profile.mean())
