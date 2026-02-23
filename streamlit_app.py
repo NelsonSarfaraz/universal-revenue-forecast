@@ -17,12 +17,20 @@ with st.sidebar:
 
 if uploaded_file:
     # 1. DATA INLADEN & OPSCHONEN
-    # We gebruiken sep=None om automatisch te detecteren of het een komma of puntkomma is
-    df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='utf-8')
+    # FIXED: encoding naar 'iso-8859-1' om de UnicodeDecodeError op te lossen
+    try:
+        df = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='iso-8859-1')
+    except Exception as e:
+        st.error(f"Er ging iets mis bij het inladen: {e}")
+        st.stop()
     
+    # Kolomnamen opschonen (verwijder onzichtbare spaties)
+    df.columns = df.columns.str.strip()
+
     # Bedrag kolom opschonen (verwijdert ", . en zorgt voor getallen)
     def clean_currency(x):
         if pd.isna(x): return 0.0
+        # Haal aanhalingstekens en duizendtallen (punten) weg, vervang komma door punt
         x = str(x).replace('"', '').replace('.', '').replace(',', '.')
         try:
             return float(x)
@@ -33,8 +41,8 @@ if uploaded_file:
     df['Date'] = pd.to_datetime(df['Datum'], dayfirst=True, errors='coerce')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
     
-    # 2. SLIMME CATEGORISERING (DE FILTER)
-    # Omzet begint vaak met 8, Kosten met 4 of 7. De rest (bank/prive) negeren we voor de winst.
+    # 2. SLIMME CATEGORISERING
+    # Omzet begint met 8, Kosten met 4 of 7.
     df_omzet = df[df['Code_Str'].str.startswith('8')].copy()
     df_kosten = df[df['Code_Str'].str.startswith(('4', '7'))].copy()
 
@@ -42,7 +50,6 @@ if uploaded_file:
     def calc_btw_logic(row):
         naam = str(row['Grootboekrekening']).lower()
         bedrag = row['Amount_Clean']
-        # Check op omzetbelasting (hoog/laag)
         if 'laag' in naam or '9%' in naam:
             return bedrag * 0.09
         elif 'hoog' in naam or '21%' in naam or row['Code_Str'].startswith('8'):
@@ -50,7 +57,6 @@ if uploaded_file:
         return 0.0
 
     df_omzet['VAT_Estimated'] = df_omzet.apply(calc_btw_logic, axis=1)
-    # Voorbelasting op kosten (meestal 21%)
     df_kosten['VAT_Reclaim'] = df_kosten['Amount_Clean'] * 0.21
 
     # --- DASHBOARD WEERGAVE ---
@@ -76,14 +82,13 @@ if uploaded_file:
 
     # Visualisatie: Inkomsten vs Uitgaven over tijd
     st.subheader("Inkomsten vs Uitgaven Trend")
-    trend_data = df[df['Code_Str'].str.startswith(('4', '7', '8'))].copy()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_omzet['Date'], y=df_omzet['Amount_Clean'], name="Omzet", mode='lines+markers', line=dict(color='green')))
     fig.add_trace(go.Scatter(x=df_kosten['Date'], y=df_kosten['Amount_Clean'], name="Kosten", mode='lines+markers', line=dict(color='red')))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tabel met de grootste kostenposten (Grootboekoverzicht)
-    st.subheader("Top Kostenposten")
+    # Tabel met de grootste kostenposten
+    st.subheader("Top Kostenposten per Grootboek")
     top_costs = df_kosten.groupby('Grootboekrekening')['Amount_Clean'].sum().sort_values(ascending=False).head(10)
     st.table(top_costs)
 
