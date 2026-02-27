@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Master BI Dashboard", layout="wide")
+st.set_page_config(page_title="BI Dashboard - Red Factory", layout="wide")
 st.title("🏛️ Master Business Intelligence Dashboard")
 
 with st.sidebar:
@@ -27,90 +27,76 @@ if uploaded_file:
     df = df.dropna(subset=['Date']).sort_values('Date')
     df['Code_Str'] = df['Code'].astype(str).str.strip()
 
-    # 2. VOLLEDIGE GESCHIEDENIS SCAN (Omzet & BTW)
+    # 2. ALLES SCANNEN (Vanaf 2016)
     df_omzet = df[df['Code_Str'].str.startswith('8')].copy()
     
-    # BTW Scanner verbeterd: kijkt naar 18xxx (BTW) én 16xxx (Crediteuren BTW)
-    df_btw = df[df['Code_Str'].str.startswith(('18', '16')) & df['Grootboekrekening'].str.contains('btw', case=False)].copy()
-    
-    tot_omzet_abs = abs(df_omzet['Amount_Clean'].sum())
-    tot_btw_abs = abs(df_btw['Amount_Clean'].sum())
-    
-    # Effectief tarief fix: als hij 0 is, pakken we 21% als fallback voor de veiligheid
-    effectief_btw_tarief = (tot_btw_abs / tot_omzet_abs) if tot_omzet_abs > 0 else 0.21
-    if effectief_btw_tarief < 0.05: effectief_btw_tarief = 0.21 
-
-    # 3. TIJDREEKS ZONDER LIMIET
-    # We groeperen op maand over de VOLLEDIGE periode van het bestand
+    # Maak een tijdreeks over de gehele periode
+    full_range = pd.date_range(start=df_omzet['Date'].min(), end=df_omzet['Date'].max(), freq='MS')
     monthly_series = df_omzet.set_index('Date')['Amount_Clean'].resample('MS').sum().abs()
-    # Interpolatie voor de gaten (zoals juli)
-    monthly_series = monthly_series.replace(0, np.nan).interpolate(method='linear').fillna(monthly_series.mean())
+    monthly_series = monthly_series.reindex(full_range).fillna(0)
 
-    # 4. PROGNOSE & MEERJARIGE TREND
-    last_12m_omzet = monthly_series.tail(12).sum()
-    # Bereken groei over de hele historie
-    aantal_jaren = len(monthly_series) / 12
-    gemiddelde_jaar_omzet = monthly_series.sum() / aantal_jaren
-    
-    totaal_2026 = last_12m_omzet if last_12m_omzet > 0 else gemiddelde_jaar_omzet
-    
-    # Groei percentage (Huidig jaar vs Gemiddelde historie)
-    groei_pct = ((totaal_2026 - gemiddelde_jaar_omzet) / gemiddelde_jaar_omzet * 100) if gemiddelde_jaar_omzet > 0 else 0.0
+    # REPARATIE: De Juli/Aug fix voor de hele historie
+    # We vullen 0-waarden in met een voortschrijdend gemiddelde
+    monthly_series_fixed = monthly_series.replace(0, np.nan).interpolate(method='linear').fillna(monthly_series.mean())
 
-    # Kostenanalyse over alle jaren
+    # 3. BTW & MARGE (Red Factory Specifiek)
+    # We zoeken naar BTW op omzet (vaak 18xxx codes)
+    df_btw = df[df['Code_Str'].str.startswith('18')].copy()
+    eff_btw = abs(df_btw['Amount_Clean'].sum()) / abs(df_omzet['Amount_Clean'].sum()) if not df_omzet.empty else 0.21
+    if eff_btw < 0.05: eff_btw = 0.21 # Fallback naar 21%
+
+    # Kosten scan
     df_kosten = df[df['Code_Str'].str.startswith(('4', '6', '7'))].copy()
-    marge_ratio = (tot_omzet_abs - abs(df_kosten['Amount_Clean'].sum())) / tot_omzet_abs if tot_omzet_abs > 0 else 0.1
-    winst_2026 = totaal_2026 * marge_ratio
+    marge_ratio = (abs(df_omzet['Amount_Clean'].sum()) - abs(df_kosten['Amount_Clean'].sum())) / abs(df_omzet['Amount_Clean'].sum()) if not df_omzet.empty else 0.1
 
-    # Seizoen voor 2026
-    seasonal_profile = monthly_series.groupby(monthly_series.index.month).mean()
-    forecast_2026 = [(seasonal_profile.get(m, seasonal_profile.mean()) / seasonal_profile.sum()) * totaal_2026 for m in range(1, 13)]
+    # 4. PROGNOSE NAAR 2026
+    # Omdat de data stopt in 2021, pakken we het historisch gemiddelde per jaar
+    aantal_jaren = len(monthly_series_fixed) / 12
+    totaal_historie = monthly_series_fixed.sum()
+    prognose_basis = (totaal_historie / aantal_jaren) # Gemiddelde omzet per jaar
+    
+    # Seizoen opbouwen uit alle jaren (gemiddelde per maand-index)
+    seasonal_pattern = monthly_series_fixed.groupby(monthly_series_fixed.index.month).mean()
+    forecast_2026 = [(seasonal_pattern.get(m, seasonal_pattern.mean()) / seasonal_pattern.sum()) * prognose_basis for m in range(1, 13)]
     future_dates = pd.date_range(start=pd.Timestamp(2026, 1, 1), periods=12, freq='MS')
 
     # --- DASHBOARD ---
-    st.subheader(f"📊 Strategisch Dashboard (Volledige Scan: {aantal_jaren:.1f} jaar data)")
+    st.subheader(f"📊 Analyse: 0165 Red Factory ({aantal_jaren:.1f} jaar historie)")
+    
     k1, k2, k3 = st.columns(3)
-    k1.metric("Verwachte Omzet 2026", f"€ {totaal_2026:,.2f}")
-    k2.metric("Verwachte Winst 2026", f"€ {winst_2026:,.2f}")
-    k3.metric("Lange-termijn Groei", f"{groei_pct:.1f}%")
+    k1.metric("Verwachte Jaaromzet", f"€ {prognose_basis:,.2f}")
+    k2.metric("Verwachte Winst", f"€ {(prognose_basis * marge_ratio):,.2f}")
+    k3.metric("Effectieve BTW", f"{(eff_btw*100):.1f}%")
 
-    # GRAFIEK: SCHAALT MEE MET GESCHIEDENIS
     st.markdown("---")
-    st.subheader("📈 Meerjarige Omzet Trend & Prognose")
+    st.subheader("📈 Meerjarige Trendlijn (Zonder Juli-gaten)")
     fig = go.Figure()
-    # Blauwe balken voor de HELE historie
-    fig.add_trace(go.Bar(x=monthly_series.index, y=monthly_series.values, name="Historische Omzet", marker_color='#1f77b4'))
-    # Oranje balken voor 2026
+    # De historische data (Blauw)
+    fig.add_trace(go.Bar(x=monthly_series_fixed.index, y=monthly_series_fixed.values, name="Historie (Gefilterd)", marker_color='#1f77b4'))
+    # De prognose voor 2026 (Oranje)
     fig.add_trace(go.Bar(x=future_dates, y=forecast_2026, name="Prognose 2026", marker_color='#ff7f0e'))
     
-    fig.update_layout(template="plotly_white", barmode='group', height=500, xaxis_title="Jaar")
+    fig.update_layout(template="plotly_white", barmode='group', height=500, xaxis_title="Tijdslijn 2016 - 2026")
     st.plotly_chart(fig, use_container_width=True)
 
-    # BTW PLANNER
-    st.markdown("---")
+    # BTW & DETAILS
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("🏦 BTW-Afdracht Planner")
-        q_rows = []
+        st.subheader("🏦 BTW Reservering 2026")
+        q_data = []
         for q in range(1, 5):
             m_idx = [0,1,2] if q==1 else [3,4,5] if q==2 else [6,7,8] if q==3 else [9,10,11]
             q_rev = sum([forecast_2026[i] for i in m_idx])
-            q_btw = q_rev * effectief_btw_tarief if not is_vrijgesteld else 0
-            q_rows.append({"Kwartaal": f"Q{q} 2026", "Omzet": f"€ {q_rev:,.0f}", "BTW": f"€ {q_btw:,.2f}"})
-        st.table(pd.DataFrame(q_rows))
+            q_data.append({"Kwartaal": f"Q{q}", "Omzet": f"€ {q_rev:,.0f}", "BTW": f"€ {q_rev*eff_btw:,.2f}"})
+        st.table(pd.DataFrame(q_data))
 
     with c2:
-        st.subheader("🍕 Totale Kostenverdeling (Alle Jaren)")
-        labels = ['Bedrijfskosten (4)', 'Inkoop (6)', 'Financieel (7)']
-        vals = [abs(df[df['Code_Str'].str.startswith('4')]['Amount_Clean'].sum()), 
-                abs(df[df['Code_Str'].str.startswith('6')]['Amount_Clean'].sum()), 
-                abs(df[df['Code_Str'].str.startswith('7')]['Amount_Clean'].sum())]
-        st.plotly_chart(go.Figure(data=[go.Pie(labels=labels, values=vals, hole=.3)]), use_container_width=True)
-
-    # SEGMENTATIE TABEL
-    st.subheader("📉 Omzet per Grootboekcode (Top 5)")
-    omzet_groepen = df_omzet.groupby('Code_Str')['Amount_Clean'].sum().abs().sort_values(ascending=False).head(5)
-    st.table(pd.DataFrame({'Code': omzet_groepen.index, 'Totaal': omzet_groepen.values}).style.format({"Totaal": "€ {:,.2f}"}))
+        st.subheader("🍕 Kostenverdeling Historie")
+        k_labels = ['Bedrijfskosten (4)', 'Inkoop (6)', 'Overig (7)']
+        k_vals = [abs(df[df['Code_Str'].str.startswith('4')]['Amount_Clean'].sum()),
+                  abs(df[df['Code_Str'].str.startswith('6')]['Amount_Clean'].sum()),
+                  abs(df[df['Code_Str'].str.startswith('7')]['Amount_Clean'].sum())]
+        st.plotly_chart(go.Figure(data=[go.Pie(labels=k_labels, values=k_vals, hole=.3)]), use_container_width=True)
 
 else:
-    st.info("Upload de Yuki CSV voor een volledige historie scan.")
+    st.info("Upload de Yuki CSV van Red Factory.")
